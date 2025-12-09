@@ -1,3 +1,25 @@
+/*
+ * Copyright (c) 2025 AtLarge Research
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 package org.opendc.compute.simulator.scheduler
 
 import org.opendc.compute.simulator.scheduler.filters.HostFilter
@@ -52,7 +74,6 @@ public class WorkflowAwareTimeshiftScheduler(
     numHosts: Int = 1000,
     private val taskLookaheadThreshold: Int = 1000,
 ) : FilterScheduler(filters, weighers, subsetSize, random, numHosts), Timeshifter {
-
     private val initTime: Long
 
     init {
@@ -90,7 +111,7 @@ public class WorkflowAwareTimeshiftScheduler(
                 simulationOffsetCurrentTime = currentTime + simulationOffset
             }
 
-            if (req.isCancelled) continue  // Skip cancelled tasks
+            if (req.isCancelled) continue // Skip cancelled tasks
 
             val task = req.task
 
@@ -127,19 +148,22 @@ public class WorkflowAwareTimeshiftScheduler(
             listIter.previous()
         }
 
-        if (highestPriorityIndex == -1) return null  // No valid task found
+        if (highestPriorityIndex == -1) return null // No valid task found
 
         // --- Navigation phase: move iterator to highest priority task ---
         while (listIter.nextIndex() < highestPriorityIndex) {
             listIter.next()
         }
 
-        val selected = listIter.next()  // Return selected task
+        val selected = listIter.next() // Return selected task
         println(selected.task.id)
         return selected
     }
 
-    private fun calculatePriorityScore(req: SchedulingRequest, currentTime: Long): Double {
+    private fun calculatePriorityScore(
+        req: SchedulingRequest,
+        currentTime: Long,
+    ): Double {
         val task = req.task
 
         // 1. Compute urgency score based on task deadline
@@ -158,9 +182,7 @@ public class WorkflowAwareTimeshiftScheduler(
 
         // Weighted sum of all scores
         return (this.weightUrgency * urgencyScore) +
-               (this.weightCriticalDependencyChain * chainScore) +
-               (this.weightCarbonImpact * carbonScore)
+            (this.weightCriticalDependencyChain * chainScore) +
+            (this.weightCarbonImpact * carbonScore)
     }
 }
-
-

@@ -24,16 +24,13 @@ package org.opendc.compute.simulator.service;
 
 import java.time.Duration;
 import java.time.InstantSource;
-import java.util.ArrayDeque;
-import java.util.LinkedList;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
-import java.util.ListIterator;
+import java.util.LinkedList;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Map;
 import java.util.Set;
 import org.jetbrains.annotations.NotNull;
@@ -140,17 +137,17 @@ public final class ComputeService implements AutoCloseable, CarbonReceiver {
     // i just store firstsubmitted at and calculate simulation offest in scheduler itself
     public Long firstTaskSubmittedAt = null;
 
-    /** 
+    /**
      * Add a new task and track it
      */
     public void addNewTask(ServiceTask task) {
 
-        if(firstTaskSubmittedAt == null) {
+        if (firstTaskSubmittedAt == null) {
             firstTaskSubmittedAt = task.getSubmittedAt();
         }
 
         final int taskId = task.getId();
-        
+
         this.taskById.put(taskId, task);
         this.tasksTotal++;
 
@@ -158,12 +155,11 @@ public final class ComputeService implements AutoCloseable, CarbonReceiver {
         if (task.hasParents()) {
             for (Integer parentId : task.getParents()) {
                 ServiceTask parentTask = this.taskById.get(parentId);
-                
+
                 if (parentTask != null) {
                     task.connectToParent(parentTask);
                 } else {
-                    LOGGER.warn("Parent task : {} has not arrived yet for child task : {}.", 
-                            parentId, taskId);
+                    LOGGER.warn("Parent task : {} has not arrived yet for child task : {}.", parentId, taskId);
                 }
             }
         } else {
@@ -176,11 +172,10 @@ public final class ComputeService implements AutoCloseable, CarbonReceiver {
         if (task.hasChildren()) {
             for (Integer childId : task.getChildren()) {
                 ServiceTask childTask = this.taskById.get(childId);
-                
+
                 if (childTask != null) {
                     task.connectToChild(childTask);
-                    LOGGER.debug("Connected out of order arrived task {} to its child {}", 
-                            taskId, childId);
+                    LOGGER.debug("Connected out of order arrived task {} to its child {}", taskId, childId);
                 }
             }
         }
@@ -191,7 +186,7 @@ public final class ComputeService implements AutoCloseable, CarbonReceiver {
         System.out.println("\n========== WORKFLOW DAG STRUCTURE ==========");
         System.out.println("Total root tasks: " + rootTaskIds.size());
         System.out.println("taskbyId" + taskById);
-        
+
         for (Integer rootId : rootTaskIds) {
             ServiceTask rootTask = taskById.get(rootId);
             if (rootTask != null) {
@@ -719,7 +714,7 @@ public final class ComputeService implements AutoCloseable, CarbonReceiver {
             final ComputeService service = this.service;
 
             task.setService(service);
-            
+
             this.service.addNewTask(task);
 
             task.start();

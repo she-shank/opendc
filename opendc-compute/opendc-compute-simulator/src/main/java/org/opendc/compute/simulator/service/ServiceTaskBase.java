@@ -180,7 +180,8 @@ public class ServiceTaskBase {
     //         this.numPauses++;
     //     }
 
-    //     if ((newState == TaskState.COMPLETED) || (newState == TaskState.FAILED) || (newState == TaskState.TERMINATED)) {
+    //     if ((newState == TaskState.COMPLETED) || (newState == TaskState.FAILED) || (newState ==
+    // TaskState.TERMINATED)) {
     //         this.finishedAt = this.service.getClock().millis();
     //     }
 

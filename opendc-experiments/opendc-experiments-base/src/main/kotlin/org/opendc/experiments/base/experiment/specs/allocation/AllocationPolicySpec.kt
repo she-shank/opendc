@@ -24,6 +24,7 @@ package org.opendc.experiments.base.experiment.specs.allocation
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import org.opendc.compute.simulator.scheduler.CarbonAwareWorkflowScheduler
 import org.opendc.compute.simulator.scheduler.ComputeScheduler
 import org.opendc.compute.simulator.scheduler.ComputeSchedulerEnum
 import org.opendc.compute.simulator.scheduler.FilterScheduler
@@ -78,9 +79,28 @@ public data class TimeShiftAllocationPolicySpec(
 public data class WorkflowAwareAllocationPolicySpec(
     val filters: List<HostFilterSpec> = listOf(ComputeFilterSpec()),
     val weighers: List<HostWeigherSpec> = emptyList(),
-    val taskDeadlineScore: Boolean = true, // whether to include deadlines in task selection score or not
+    // whether to include deadlines in task selection score or not
+    val taskDeadlineScore: Boolean = true,
     val weightUrgency: Double = 0.2,
     val weightCriticalDependencyChain: Double = 0.2,
+    val subsetSize: Int = 1,
+) : AllocationPolicySpec
+
+@Serializable
+@SerialName("carbonAware")
+public data class CarbonAwareAllocationPolicySpec(
+    val filters: List<HostFilterSpec> = listOf(ComputeFilterSpec()),
+    val weighers: List<HostWeigherSpec> = emptyList(),
+    // Carbon delay threshold percentile (default: 0.2 = 20th percentile)
+    val carbonDelayThreshold: Double = 0.2,
+    // Maximum hours to delay for carbon benefit
+    val maxDelayHours: Int = 4,
+    // Forecast horizon in hours
+    val forecastHorizon: Int = 24,
+    // Slack threshold multiplier for safety margin (default: 2.0)
+    val slackThresholdMultiplier: Double = 2.0,
+    // Whether to prioritize critical path preservation (default: true)
+    val prioritizeCriticalPath: Boolean = true,
     val subsetSize: Int = 1,
 ) : AllocationPolicySpec
 
@@ -91,7 +111,9 @@ public fun createComputeScheduler(
     numHosts: Int = 1000,
 ): ComputeScheduler {
     return when (spec) {
-        is PrefabAllocationPolicySpec -> createPrefabComputeScheduler(spec.policyName, seeder, clock, numHosts)
+        is PrefabAllocationPolicySpec -> {
+            createPrefabComputeScheduler(spec.policyName, seeder, clock, numHosts)
+        }
         is FilterAllocationPolicySpec -> {
             val filters = spec.filters.map { createHostFilter(it) }
             val weighers = spec.weighers.map { createHostWeigher(it) }
@@ -121,8 +143,24 @@ public fun createComputeScheduler(
             val filters = spec.filters.map { createHostFilter(it) }
             val weighers = spec.weighers.map { createHostWeigher(it) }
             WorkflowAwareScheduler(
-                filters, weighers, spec.taskDeadlineScore, spec.weightUrgency, 
-                spec.weightCriticalDependencyChain, clock, spec.subsetSize, seeder, numHosts
+                filters, weighers, spec.taskDeadlineScore, spec.weightUrgency,
+                spec.weightCriticalDependencyChain, clock, spec.subsetSize, seeder, numHosts,
+            )
+        }
+        is CarbonAwareAllocationPolicySpec -> {
+            val filters = spec.filters.map { createHostFilter(it) }
+            val weighers = spec.weighers.map { createHostWeigher(it) }
+            CarbonAwareWorkflowScheduler(
+                filters,
+                weighers,
+                clock,
+                spec.carbonDelayThreshold,
+                spec.maxDelayHours,
+                spec.forecastHorizon,
+                spec.subsetSize,
+                seeder,
+                spec.slackThresholdMultiplier,
+                spec.prioritizeCriticalPath,
             )
         }
     }

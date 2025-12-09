@@ -1,269 +1,331 @@
+/*
+ * Copyright (c) 2025 AtLarge Research
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 package org.opendc.compute.simulator.scheduler
 
-import org.opendc.compute.api.TaskState
-import org.opendc.compute.simulator.scheduler.carbonaware.CarbonOptimizer
-import org.opendc.compute.simulator.scheduler.carbonaware.CarbonScheduleState
-import org.opendc.compute.simulator.scheduler.carbonaware.TopologicalSort
 import org.opendc.compute.simulator.scheduler.filters.HostFilter
-import org.opendc.compute.simulator.scheduler.timeshift.Timeshifter
 import org.opendc.compute.simulator.scheduler.weights.HostWeigher
+import org.opendc.compute.simulator.service.HostView
 import org.opendc.compute.simulator.service.ServiceTask
 import org.opendc.simulator.compute.power.CarbonModel
+import org.opendc.simulator.compute.power.CarbonReceiver
 import java.time.InstantSource
-import java.util.LinkedList
 import java.util.SplittableRandom
 import java.util.random.RandomGenerator
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
- * A scheduler that optimizes task placement to minimize carbon emissions
- * using depth-first search with branch-and-bound.
+ * Hybrid Priority-Based Carbon-Aware Workflow Scheduler.
  *
- * This scheduler analyzes the entire workflow and uses a global optimization
- * approach to find the carbon-minimal schedule while respecting task dependencies
- * and resource constraints.
+ * Combines carbon-aware scheduling with workflow dependency awareness:
+ * - Delays deferrable tasks during high carbon periods
+ * - Tracks task relationships to avoid delaying critical tasks
+ * - Uses slack thresholds to ensure deadline safety
+ * - Prioritizes tasks with many dependents
+ *
+ * Strategy:
+ * 1. Track task metadata (when first seen, relationship indicators)
+ * 2. Calculate slack buffer based on task priority
+ * 3. Apply conservative delays for tasks with many pending tasks in queue
+ * 4. Use carbon forecast to make delay decisions
  *
  * @param filters List of host filters to apply
  * @param weighers List of host weighers for scoring hosts
  * @param clock Clock for tracking time
- * @param slotLengthMs Duration of each time slot in milliseconds (default: 1 hour)
- * @param horizonSlots Number of time slots in planning horizon (default: 1 week)
- * @param enableOptimization Enable/disable DFS optimization (default: true)
+ * @param carbonDelayThreshold Percentile threshold for "high carbon" (default: 0.2 = 20th percentile)
+ * @param maxDelayHours Maximum hours to delay a task for carbon benefit (default: 4 hours)
+ * @param forecastHorizon Number of hours to look ahead in carbon forecast (default: 24 hours)
  * @param subsetSize Number of hosts to consider after weighing
  * @param random Random number generator
- * @param numHosts Expected number of hosts
+ * @param slackThresholdMultiplier Multiplier for slack safety margin (default: 2.0 = 2x safety)
+ * @param prioritizeCriticalPath Whether to be conservative with early tasks (default: true)
  */
 public class CarbonAwareWorkflowScheduler(
-    filters: List<HostFilter>,
-    weighers: List<HostWeigher>,
-    override val clock: InstantSource,
-    private val slotLengthMs: Long = 3_600_000L, // 1 hour default
-    private val horizonSlots: Int = 168, // 1 week default
-    private val enableOptimization: Boolean = true,
-    subsetSize: Int = 1,
-    random: RandomGenerator = SplittableRandom(0),
-    private val numHosts: Int = 1000,
-) : FilterScheduler(filters, weighers, subsetSize, random, numHosts),
-    Timeshifter {
-    // Timeshifter properties for carbon tracking
-    override val windowSize: Int = horizonSlots
-    override val forecast: Boolean = true
-    override val shortForecastThreshold: Double = 0.2
-    override val longForecastThreshold: Double = 0.35
-    override val forecastSize: Int = 24
-    override val pastCarbonIntensities: LinkedList<Double> = LinkedList()
-    override var carbonRunningSum: Double = 0.0
-    override var shortLowCarbon: Boolean = false
-    override var longLowCarbon: Boolean = false
-    override var carbonMod: CarbonModel? = null
+    private val filters: List<HostFilter>,
+    private val weighers: List<HostWeigher>,
+    private val clock: InstantSource,
+    private val carbonDelayThreshold: Double = 0.2,
+    private val maxDelayHours: Int = 4,
+    private val forecastHorizon: Int = 24,
+    private val subsetSize: Int = 1,
+    private val random: RandomGenerator = SplittableRandom(0),
+    private val slackThresholdMultiplier: Double = 2.0,
+    private val prioritizeCriticalPath: Boolean = true,
+) : ComputeScheduler, CarbonReceiver {
+    private val hosts = mutableListOf<HostView>()
+    private var carbonModel: CarbonModel? = null
+    private var lowCarbon: Boolean = false
+    private var currentCarbonIntensity: Double = 0.0 // Track current carbon intensity
 
-    // Scheduling state
-    private val scheduledTasks = mutableMapOf<Int, Int>() // taskId -> startSlot
-    private var lastOptimizationTime: Long = 0
-    private val optimizationInterval = slotLengthMs // Re-optimize every slot
+    private var tasksDelayed = 0
+    private var tasksScheduled = 0
+    private var criticalPathSkips = 0
+    private var slackSkips = 0
 
-    override fun selectTask(iter: MutableIterator<SchedulingRequest>): SchedulingRequest? {
-        val currentTime = clock.millis()
+    // Task metadata tracking
+    private data class TaskMetadata(
+        val firstSeen: Long,
+        var queuePosition: Int = 0,
+    )
 
-        // Check if we should re-optimize
-        if (enableOptimization &&
-            currentTime - lastOptimizationTime >= optimizationInterval
-        ) {
-            performOptimization(iter)
-            lastOptimizationTime = currentTime
-        }
+    private val taskMetadata = mutableMapOf<Int, TaskMetadata>()
 
-        // Select the highest priority task that's ready to run
-        return selectReadyTask(iter, currentTime)
+    init {
+        require(subsetSize >= 1) { "Subset size must be one or greater" }
+        require(slackThresholdMultiplier >= 1.0) { "Slack threshold multiplier must be >= 1.0" }
     }
 
-    /**
-     * Perform global optimization of the task schedule.
-     */
-    private fun performOptimization(iter: MutableIterator<SchedulingRequest>) {
-        // Collect all pending tasks
-        val tasks = mutableListOf<SchedulingRequest>()
-        @Suppress("UNCHECKED_CAST")
-        val listIter = iter as ListIterator<SchedulingRequest>
-
-        while (listIter.hasNext()) {
-            val req = listIter.next()
-            if (!req.isCancelled) {
-                tasks.add(req)
-            }
-        }
-
-        // Reset iterator
-        while (listIter.hasPrevious()) {
-            listIter.previous()
-        }
-
-        if (tasks.isEmpty()) return
-
-        // Build optimization state
-        val state = buildScheduleState(tasks)
-
-        // Get carbon forecast
-        val carbonForecast = getCarbonForecast()
-
-        // Run optimization
-        val optimizer = CarbonOptimizer(carbonForecast, numHosts)
-        optimizer.optimize(state)
-
-        // Update scheduled tasks map with results
-        if (state.bestCost < Double.POSITIVE_INFINITY) {
-            for (i in 0 until state.taskCount) {
-                val taskIdx = state.topoOrder[i]
-                val req = tasks[taskIdx]
-                val startSlot = state.bestAssignment[taskIdx]
-
-                if (startSlot >= 0) {
-                    scheduledTasks[req.task.id] = startSlot
-                }
-            }
-        } else {
-            // Optimization failed - use greedy fallback
-            val currentSlot = (clock.millis() / slotLengthMs).toInt()
-            for (req in tasks) {
-                if (req.task.id !in scheduledTasks) {
-                    scheduledTasks[req.task.id] = currentSlot
-                }
-            }
-        }
+    override fun addHost(host: HostView) {
+        hosts.add(host)
     }
 
-    /**
-     * Build the schedule state from the list of pending tasks.
-     */
-    private fun buildScheduleState(tasks: List<SchedulingRequest>): CarbonScheduleState {
-        val n = tasks.size
-        val state = CarbonScheduleState(n, horizonSlots, slotLengthMs)
+    override fun removeHost(host: HostView) {
+        hosts.remove(host)
+    }
 
-        // Build task index mapping
-        val taskIdToIndex =
-            tasks.mapIndexed { idx, req ->
-                req.task.id to idx
-            }.toMap()
+    override fun updateHost(hostView: HostView) {
+        // No-op
+    }
 
-        // Build parent relationships
-        for ((idx, req) in tasks.withIndex()) {
-            val parents = req.task.parents
-            if (parents != null && parents.isNotEmpty()) {
-                state.parents[idx] =
-                    parents.mapNotNull {
-                        taskIdToIndex[it]
-                    }.toIntArray()
+    override fun setHostEmpty(hostView: HostView) {
+        // No-op
+    }
+
+    override fun select(iter: MutableIterator<SchedulingRequest>): SchedulingResult {
+        var result: SchedulingResult? = null
+        var queuePos = 0
+
+        for (req in iter) {
+            if (req.isCancelled) {
+                iter.remove()
+                continue
             }
-        }
 
-        // Perform topological sort
-        TopologicalSort.sort(n, state.parents).copyInto(state.topoOrder)
+            val task = req.task as? ServiceTask ?: continue
 
-        // Calculate durations and release slots
-        val minSubmission = tasks.minOf { it.task.submittedAt }
-        for ((idx, req) in tasks.withIndex()) {
-            val task = req.task
-            state.durationMs[idx] = task.duration
-            state.durationSlots[idx] =
-                ((task.duration + slotLengthMs - 1) / slotLengthMs).toInt()
+            // Track this task
+            updateTaskMetadata(task, queuePos)
+            queuePos++
 
-            val delta = task.submittedAt - minSubmission
-            state.releaseSlot[idx] =
-                if (delta <= 0) {
-                    0
-                } else {
-                    ((delta + slotLengthMs - 1) / slotLengthMs).toInt()
-                }
-        }
+            // Workflow-aware delay decision
+            if (shouldDelayWorkflowAware(task)) {
+                tasksDelayed++
+                continue
+            }
 
-        return state
-    }
+            // Schedule this task
+            val filteredHosts = hosts.filter { host -> filters.all { filter -> filter.test(host, task) } }
 
-    /**
-     * Get carbon intensity forecast for the planning horizon.
-     */
-    private fun getCarbonForecast(): DoubleArray {
-        val forecast = carbonMod?.getForecast(horizonSlots)
+            val subset =
+                if (weighers.isNotEmpty()) {
+                    val filterResults = weighers.map { it.getWeights(filteredHosts, task) }
+                    val weights = DoubleArray(filteredHosts.size)
 
-        return if (forecast != null) {
-            DoubleArray(forecast.size) { i -> forecast[i] }
-        } else {
-            DoubleArray(horizonSlots) { 100.0 }
-        }
-    }
+                    for (fr in filterResults) {
+                        val min = fr.min
+                        val range = (fr.max - min)
 
-    /**
-     * Select the highest priority task that is ready to run now.
-     */
-    private fun selectReadyTask(
-        iter: MutableIterator<SchedulingRequest>,
-        currentTime: Long,
-    ): SchedulingRequest? {
-        val currentSlot = (currentTime / slotLengthMs).toInt()
-        @Suppress("UNCHECKED_CAST")
-        val listIter = iter as ListIterator<SchedulingRequest>
+                        if (range == 0.0) {
+                            continue
+                        }
 
-        var bestReq: SchedulingRequest? = null
-        var bestPriority = Double.NEGATIVE_INFINITY
-        var bestIsUnscheduled = false
+                        val multiplier = fr.multiplier
+                        val factor = multiplier / range
 
-        while (listIter.hasNext()) {
-            val req = listIter.next()
-            if (req.isCancelled) continue
-
-            val scheduledSlot = this.scheduledTasks[req.task.id]
-
-            if (scheduledSlot != null) {
-                if (scheduledSlot <= currentSlot) {
-                    if (areDependenciesMet(req.task)) {
-                        val priority = calculatePriority(req)
-                        if (!bestIsUnscheduled || priority > bestPriority) {
-                            bestPriority = priority
-                            bestReq = req
-                            bestIsUnscheduled = false
+                        for ((i, weight) in fr.weights.withIndex()) {
+                            weights[i] += factor * (weight - min)
                         }
                     }
+
+                    weights.indices
+                        .asSequence()
+                        .sortedByDescending { weights[it] }
+                        .map { filteredHosts[it] }
+                        .take(subsetSize)
+                        .toList()
+                } else {
+                    filteredHosts
                 }
+
+            val maxSize = min(subsetSize, subset.size)
+            if (maxSize == 0) {
+                result = SchedulingResult(SchedulingResultType.FAILURE, null, req)
+                break
             } else {
-                // Task not scheduled - use greedy fallback if dependencies met
-                if (areDependenciesMet(req.task)) {
-                    val priority = calculatePriority(req)
-                    if (bestReq == null || (bestIsUnscheduled && priority > bestPriority)) {
-                        bestPriority = priority
-                        bestReq = req
-                        bestIsUnscheduled = true
+                iter.remove()
+                tasksScheduled++
+                result = SchedulingResult(SchedulingResultType.SUCCESS, subset[random.nextInt(maxSize)], req)
+                break
+            }
+        }
+
+        if (result == null) return SchedulingResult(SchedulingResultType.EMPTY)
+
+        return result
+    }
+
+    /**
+     * Update metadata for task tracking.
+     */
+    private fun updateTaskMetadata(
+        task: ServiceTask,
+        queuePosition: Int,
+    ) {
+        if (!taskMetadata.containsKey(task.id)) {
+            taskMetadata.put(
+                task.id,
+                TaskMetadata(
+                    firstSeen = clock.millis(),
+                    queuePosition = queuePosition,
+                ),
+            )
+        } else {
+            taskMetadata.get(task.id)!!.queuePosition = queuePosition
+        }
+    }
+
+    /**
+     * Workflow-aware delay decision logic with adaptive forecast horizon.
+     *
+     * Considers:
+     * - Task deferrability
+     * - Carbon intensity regime (adaptive to task deadline)
+     * - Deadline slack with safety margin
+     * - Queue position (early tasks likely more critical)
+     * - Total tasks in system (busy periods need less delay)
+     *
+     * Enhanced: Uses adaptive forecast horizon based on task deadline.
+     * If deadline is sooner than configured horizon, uses deadline instead.
+     */
+    private fun shouldDelayWorkflowAware(task: ServiceTask): Boolean {
+        // Basic checks
+        if (!task.deferrable) return false
+
+        val currentTime = clock.millis()
+        val slack = task.deadline - currentTime - task.duration
+
+        // Calculate adaptive forecast horizon based on task deadline
+        val timeUntilDeadlineMs = task.deadline - currentTime
+        val timeUntilDeadlineHours = (timeUntilDeadlineMs / 3600000.0)
+
+        // Use minimum of configured horizon and time until deadline
+        // Also enforce minimum of 1 hour for stable percentile calculation
+        val adaptiveHorizonHours =
+            min(
+                forecastHorizon.toDouble(),
+                max(1.0, timeUntilDeadlineHours),
+            ).toInt()
+
+        // Get carbon forecast for adaptive horizon
+        val forecast = carbonModel?.getForecast(adaptiveHorizonHours)
+        if (forecast == null || forecast.isEmpty()) {
+            // No forecast available, use global lowCarbon flag as fallback
+            if (lowCarbon) return false
+        } else {
+            // Calculate task-specific carbon regime using adaptive horizon
+            val localForecastSize = forecast.size
+            val quantileIndex = (localForecastSize * carbonDelayThreshold).roundToInt()
+            val carbonThreshold = forecast.sorted()[quantileIndex]
+
+            // If carbon is already low relative to adaptive forecast, don't delay
+            if (currentCarbonIntensity < carbonThreshold) {
+                return false
+            }
+        }
+
+        // Calculate minimum required slack with safety margin
+        val baseSlackNeeded = maxDelayHours * 3600000L
+        var minSlackNeeded = (baseSlackNeeded * slackThresholdMultiplier).toLong()
+
+        // Workflow-aware adjustments
+        if (prioritizeCriticalPath) {
+            val metadata = taskMetadata.get(task.id)
+
+            if (metadata != null) {
+                // Early tasks in queue are likely on or near critical path
+                // Require more slack for delaying them
+                if (metadata.queuePosition < 5) {
+                    minSlackNeeded = (minSlackNeeded * 1.5).toLong()
+
+                    // If very early and not enough slack, skip delay
+                    if (slack < minSlackNeeded) {
+                        criticalPathSkips++
+                        return false
                     }
+                } // If many tasks waiting (busy period), be more conservative
+                // This prevents cascading delays
+                val queueDepth = taskMetadata.size
+                if (queueDepth > 20) {
+                    minSlackNeeded = (minSlackNeeded * 1.2).toLong()
                 }
             }
         }
 
-        // Reset iterator
-        while (listIter.hasPrevious()) {
-            listIter.previous()
+        // Final slack check
+        if (slack < minSlackNeeded) {
+            slackSkips++
+            return false
         }
 
-        return bestReq
+        // Safe to delay
+        return true
     }
 
-    /**
-     * Check if all dependencies of a task are met.
-     */
-    private fun areDependenciesMet(task: ServiceTask): Boolean {
-        val parents = task.wfParents
-        if (parents.isEmpty()) return true
+    override fun removeTask(
+        task: ServiceTask,
+        host: HostView?,
+    ) {
+        // Clean up metadata for completed tasks to prevent memory bloat
+        taskMetadata.remove(task.id)
+    }
 
-        // A dependency is met if parent is COMPLETED. We also check for DELETED or TERMINATED states because i think
-        // Opendc just deletes them after a while.
-        return parents.all {
-            it.state == TaskState.COMPLETED ||
-            it.state == TaskState.DELETED ||
-            it.state == TaskState.TERMINATED
+    override fun setCarbonModel(carbonModel: CarbonModel?) {
+        this.carbonModel = carbonModel
+    }
+
+    override fun removeCarbonModel(carbonModel: CarbonModel?) {
+        if (this.carbonModel == carbonModel) {
+            this.carbonModel = null
         }
     }
 
-    /**
-     * Calculate priority score for a task.
-     */
-    private fun calculatePriority(req: SchedulingRequest): Double {
-        return req.task.calcMaxDependencyChainLength().toDouble()
+    override fun updateCarbonIntensity(newCarbonIntensity: Double) {
+        // Store current carbon intensity for adaptive horizon calculations
+        currentCarbonIntensity = newCarbonIntensity
+
+        // Use forecast to determine if we're in low carbon regime (for fallback)
+        val forecast = carbonModel?.getForecast(forecastHorizon) ?: return
+
+        if (forecast.isEmpty()) {
+            lowCarbon = false
+            return
+        }
+
+        val localForecastSize = forecast.size
+        val quantileIndex = (localForecastSize * carbonDelayThreshold).roundToInt()
+        val carbonThreshold = forecast.sorted()[quantileIndex]
+
+        lowCarbon = newCarbonIntensity < carbonThreshold
     }
 }

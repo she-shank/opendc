@@ -28,7 +28,6 @@ import org.opendc.compute.simulator.scheduler.filters.RamFilter
 import org.opendc.compute.simulator.scheduler.filters.VCpuFilter
 import org.opendc.compute.simulator.scheduler.filters.VGpuFilter
 import org.opendc.compute.simulator.scheduler.timeshift.TimeshiftScheduler
-import org.opendc.compute.simulator.scheduler.WorkflowAwareTimeshiftScheduler
 import org.opendc.compute.simulator.scheduler.weights.CoreRamWeigher
 import org.opendc.compute.simulator.scheduler.weights.InstanceCountWeigher
 import org.opendc.compute.simulator.scheduler.weights.RamWeigher
@@ -79,8 +78,6 @@ public fun createPrefabComputeScheduler(
     val cpuAllocationRatio = 1.0
     val ramAllocationRatio = 1.0
     val gpuAllocationRatio = 1.0
-
-    println("Creating ComputeScheduler: $name with $numHosts hosts")
 
     return when (name) {
         ComputeSchedulerEnum.Mem ->
@@ -189,45 +186,45 @@ public fun createPrefabComputeScheduler(
                         RamFilter(ramAllocationRatio),
                     ),
             )
-         ComputeSchedulerEnum.WorkflowAware->
-             WorkflowAwareScheduler(
-                 filters = listOf(VCpuFilter(cpuAllocationRatio), RamFilter(ramAllocationRatio)),
-                 weighers = listOf(RamWeigher(multiplier = 1.0)),
-                 numHosts = numHosts,
-                 clock = clock,
-                 taskDeadlineScore = false
-             )
-         ComputeSchedulerEnum.WorkflowAwareTimeshift->
-             WorkflowAwareTimeshiftScheduler(
-                 filters = listOf(ComputeFilter(), VCpuFilter(cpuAllocationRatio), RamFilter(ramAllocationRatio)),
-                 weighers = listOf(RamWeigher(multiplier = 1.0)),
-                 numHosts = numHosts,
-                 clock = clock,
-                 taskDeadlineScore = true,
-                 weightUrgency = 0.3,
-                 weightCriticalDependencyChain = 0.4,
-                 weightCarbonImpact = 0.3,
-                 windowSize = 168,
-                 forecast = true,
-                 shortForecastThreshold = 0.2,
-                 longForecastThreshold = 0.35,
-                 forecastSize = 24,
-                 random = SplittableRandom(seeder.nextLong()),
-             )
-         ComputeSchedulerEnum.CarbonAwareWorkflow->
-             CarbonAwareWorkflowScheduler(
-                 filters = listOf(
-                     ComputeFilter(),
-                     VCpuFilter(cpuAllocationRatio),
-                     RamFilter(ramAllocationRatio)
-                 ),
-                 weighers = listOf(RamWeigher(multiplier = 1.0)),
-                 clock = clock,
-                 slotLengthMs = 3_600_000L, // 1 hour slots
-                 horizonSlots = 168, // 1 week horizon
-                 enableOptimization = true,
-                 numHosts = numHosts,
-                 random = SplittableRandom(seeder.nextLong()),
-             )
+        ComputeSchedulerEnum.WorkflowAware ->
+            WorkflowAwareScheduler(
+                filters = listOf(VCpuFilter(cpuAllocationRatio), RamFilter(ramAllocationRatio)),
+                weighers = listOf(RamWeigher(multiplier = 1.0)),
+                numHosts = numHosts,
+                clock = clock,
+                taskDeadlineScore = false,
+            )
+        ComputeSchedulerEnum.WorkflowAwareTimeshift ->
+            WorkflowAwareTimeshiftScheduler(
+                filters = listOf(ComputeFilter(), VCpuFilter(cpuAllocationRatio), RamFilter(ramAllocationRatio)),
+                weighers = listOf(RamWeigher(multiplier = 1.0)),
+                numHosts = numHosts,
+                clock = clock,
+                taskDeadlineScore = true,
+                weightUrgency = 0.3,
+                weightCriticalDependencyChain = 0.4,
+                weightCarbonImpact = 0.3,
+                windowSize = 168,
+                forecast = true,
+                shortForecastThreshold = 0.2,
+                longForecastThreshold = 0.35,
+                forecastSize = 24,
+                random = SplittableRandom(seeder.nextLong()),
+            )
+        ComputeSchedulerEnum.CarbonAwareWorkflow ->
+            CarbonAwareWorkflowScheduler(
+                filters =
+                    listOf(
+                        ComputeFilter(),
+                        VCpuFilter(cpuAllocationRatio),
+                        RamFilter(ramAllocationRatio),
+                    ),
+                weighers = listOf(RamWeigher(multiplier = 1.0)),
+                clock = clock,
+                carbonDelayThreshold = 0.2,
+                maxDelayHours = 4,
+                forecastHorizon = 24,
+                random = SplittableRandom(seeder.nextLong()),
+            )
     }
 }

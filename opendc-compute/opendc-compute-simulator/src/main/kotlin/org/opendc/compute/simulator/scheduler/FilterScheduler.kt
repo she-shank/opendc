@@ -22,14 +22,13 @@
 
 package org.opendc.compute.simulator.scheduler
 
+import org.opendc.common.logger.logger
 import org.opendc.compute.simulator.host.HostState
 import org.opendc.compute.simulator.scheduler.filters.HostFilter
 import org.opendc.compute.simulator.scheduler.weights.HostWeigher
 import org.opendc.compute.simulator.service.HostView
 import org.opendc.compute.simulator.service.ServiceTask
 import java.util.SplittableRandom
-import org.opendc.common.logger.errAndNull
-import org.opendc.common.logger.logger
 import java.util.random.RandomGenerator
 
 /**
@@ -128,7 +127,7 @@ public open class FilterScheduler(
 
     override fun select(iter: MutableIterator<SchedulingRequest>): SchedulingResult {
         val req = selectTask(iter) ?: return SchedulingResult(SchedulingResultType.EMPTY)
-        
+
         val task = req.task
 
         val fittingHosts = usedHosts.getFittingHosts(task)
@@ -191,12 +190,11 @@ public open class FilterScheduler(
         return SchedulingResult(SchedulingResultType.SUCCESS, hostView, req)
     }
 
-
     protected open fun selectTask(iter: MutableIterator<SchedulingRequest>): SchedulingRequest? {
         if (!iter.hasNext()) {
             return null
         }
-        
+
         var req = iter.next()
 
         while (req.isCancelled) {
@@ -208,7 +206,7 @@ public open class FilterScheduler(
                 return null
             }
         }
-        
+
         return req
     }
 
