@@ -186,45 +186,88 @@ public fun createPrefabComputeScheduler(
                         RamFilter(ramAllocationRatio),
                     ),
             )
-        ComputeSchedulerEnum.WorkflowAware ->
-            WorkflowAwareScheduler(
-                filters = listOf(VCpuFilter(cpuAllocationRatio), RamFilter(ramAllocationRatio)),
-                weighers = listOf(RamWeigher(multiplier = 1.0)),
-                numHosts = numHosts,
-                clock = clock,
-                taskDeadlineScore = false,
-            )
-        ComputeSchedulerEnum.WorkflowAwareTimeshift ->
-            WorkflowAwareTimeshiftScheduler(
-                filters = listOf(ComputeFilter(), VCpuFilter(cpuAllocationRatio), RamFilter(ramAllocationRatio)),
-                weighers = listOf(RamWeigher(multiplier = 1.0)),
-                numHosts = numHosts,
-                clock = clock,
-                taskDeadlineScore = true,
-                weightUrgency = 0.3,
-                weightCriticalDependencyChain = 0.4,
-                weightCarbonImpact = 0.3,
-                windowSize = 168,
-                forecast = true,
-                shortForecastThreshold = 0.2,
-                longForecastThreshold = 0.35,
-                forecastSize = 24,
-                random = SplittableRandom(seeder.nextLong()),
-            )
-        ComputeSchedulerEnum.CarbonAwareWorkflow ->
-            CarbonAwareWorkflowScheduler(
-                filters =
-                    listOf(
-                        ComputeFilter(),
-                        VCpuFilter(cpuAllocationRatio),
-                        RamFilter(ramAllocationRatio),
-                    ),
-                weighers = listOf(RamWeigher(multiplier = 1.0)),
-                clock = clock,
-                carbonDelayThreshold = 0.2,
-                maxDelayHours = 4,
-                forecastHorizon = 24,
-                random = SplittableRandom(seeder.nextLong()),
-            )
+        // ComputeSchedulerEnum.WorkflowAware ->
+        //     WorkflowAwareScheduler(
+        //         filters = listOf(VCpuFilter(cpuAllocationRatio), RamFilter(ramAllocationRatio)),
+        //         weighers = listOf(RamWeigher(multiplier = 1.0)),
+        //         numHosts = numHosts,
+        //         clock = clock,
+        //         taskDeadlineScore = false,
+        //     )
+        // ComputeSchedulerEnum.WorkflowAwareTimeshift ->
+        //     WorkflowAwareTimeshiftScheduler(
+        //         filters = listOf(ComputeFilter(), VCpuFilter(cpuAllocationRatio), RamFilter(ramAllocationRatio)),
+        //         weighers = listOf(RamWeigher(multiplier = 1.0)),
+        //         numHosts = numHosts,
+        //         clock = clock,
+        //         taskDeadlineScore = true,
+        //         weightUrgency = 0.3,
+        //         weightCriticalDependencyChain = 0.4,
+        //         weightCarbonImpact = 0.3,
+        //         windowSize = 168,
+        //         forecast = true,
+        //         shortForecastThreshold = 0.2,
+        //         longForecastThreshold = 0.35,
+        //         forecastSize = 24,
+        //         random = SplittableRandom(seeder.nextLong()),
+        //     )
+        // ComputeSchedulerEnum.CarbonAwareWorkflow ->
+        //     CarbonAwareWorkflowScheduler(
+        //         filters =
+        //             listOf(
+        //                 ComputeFilter(),
+        //                 VCpuFilter(cpuAllocationRatio),
+        //                 RamFilter(ramAllocationRatio),
+        //             ),
+        //         weighers = listOf(RamWeigher(multiplier = 1.0)),
+        //         clock = clock,
+        //         carbonDelayThreshold = 0.2,
+        //         maxDelayHours = 4,
+        //         forecastHorizon = 24,
+        //         random = SplittableRandom(seeder.nextLong()),
+        //     )
+         ComputeSchedulerEnum.WorkflowAware->
+             WorkflowAwareScheduler(
+                 filters = listOf(VCpuFilter(cpuAllocationRatio), RamFilter(ramAllocationRatio)),
+                 weighers = listOf(RamWeigher(multiplier = 1.0)),
+                 numHosts = numHosts,
+                 clock = clock,
+                 enableDeadlineScore = false
+             )
+         ComputeSchedulerEnum.WorkflowAwareTimeshift->
+             WorkflowAwareTimeshiftScheduler(
+                 filters = listOf(ComputeFilter(), VCpuFilter(cpuAllocationRatio), RamFilter(ramAllocationRatio)),
+                 weighers = listOf(RamWeigher(multiplier = 1.0)),
+                 numHosts = numHosts,
+                 clock = clock,
+                 taskDeadlineScore = true,
+                 weightUrgency = 0.3,
+                 weightCriticalDependencyChain = 0.4,
+                 weightCarbonImpact = 0.3,
+                 windowSize = 168,
+                 forecast = true,
+                 shortForecastThreshold = 0.2,
+                 longForecastThreshold = 0.35,
+                 forecastSize = 24,
+                 random = SplittableRandom(seeder.nextLong()),
+             )
+         ComputeSchedulerEnum.CarbonAwareWorkflow->
+             CarbonAwareWorkflowScheduler(
+                 filters = listOf(
+                     ComputeFilter(),
+                     VCpuFilter(cpuAllocationRatio),
+                     RamFilter(ramAllocationRatio)
+                 ),
+                 weighers = listOf(RamWeigher(multiplier = 1.0)),
+                 clock = clock,
+                 slotLengthMs = 3_600_000L, // 1 hour slots
+                 horizonSlots = 24, // 24 hour horizon
+                 enableOptimization = true,
+                 batchSize = 100, // Optimize up to 100 tasks at a time
+                 maxSlotsToTry = 10, // Try up to 10 different time slots per task
+                 searchWindowSize = 24, // Search 24 slots (24 hours) ahead for low-carbon slots
+                 numHosts = numHosts,
+                 random = SplittableRandom(seeder.nextLong()),
+             )
     }
 }
